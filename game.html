@@ -1,0 +1,1717 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Retro Platformer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #000; }
+        body { display: block; }
+        canvas { display: block; background: #87CEEB; margin: 0; padding: 0; image-rendering: pixelated; }
+    </style>
+</head>
+<body>
+    <canvas id="game"></canvas>
+    <script>
+    (function(){
+        const canvas = document.getElementById('game');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        const NORMAL_SPEED = 7;
+        const SPRINT_SPEED = 10.5;
+        const pixelsPerMeter = 200;
+
+        const assets=[
+            'IdleW.png','RunW1.png','RunW2.png','RunW3.png','RunW4.png','JumpW.png',
+            'GrassBlock.png','DirtBlock.png','Pipe.png','PlantChomper.png',
+            'SlimeBlob.png','noonbackground.png','Coin.png','Star.png','Checkpoint.png','HeartLife.png','ExclaMark.png','RUN.png',
+            'BlackGrass.png','BlackDirt.png','WhiteBackground.png',
+            'GreyGrass.png','GreyDirt.png','StaticBackground.gif','GreyPipe.png','GreyPlantMonster.png','GreySlimeBlob.png',
+            'Tentacle1.png','Tentacle2.png','Tentacle3.png','Tentacle4.png','Tentacle5.png'
+        ];
+        const images={};
+        let loaded=0;
+        assets.forEach(a=>{const i=new Image();i.src=a;i.onload=()=>loaded++;images[a]=i;});
+
+        // Global asset initialization (Anti-Freeze & Fail-Safe)
+        const greyGrass = new Image(); greyGrass.src = 'GreyGrass.png';
+        const greyDirt = new Image(); greyDirt.src = 'GreyDirt.png';
+        const grassBlack = new Image(); grassBlack.src = 'BlackGrass.png';
+        const dirtBlack = new Image(); dirtBlack.src = 'BlackDirt.png';
+        const staticVideo = document.createElement('video');
+        staticVideo.src = 'StaticNewBackground.mp4';
+        staticVideo.muted = true;
+        staticVideo.loop = true;
+        staticVideo.playsInline = true;
+        staticVideo.setAttribute('preload', 'auto');
+        staticVideo.play(); // Must be playing for frames to update on Canvas
+        const greyPipe = new Image(); greyPipe.src = 'GreyPipe.png';
+        const greyPlant = new Image(); greyPlant.src = 'GreyPlantMonster.png';
+        const greySlime = new Image(); greySlime.src = 'GreySlimeBlob.png';
+        const whiteBG = new Image(); whiteBG.src = 'WhiteBackground.png';
+        
+        // Phase 5 Assets (The Void)
+        const intenseBG = new Image(); intenseBG.src = 'IntenseStaticBackground.png';
+        const glitchOverlay = new Image(); glitchOverlay.src = 'BBGlitch.png';
+        const voidImg = new Image(); voidImg.src = 'BlackParticle.png';
+
+        const grassNoon = images['GrassBlock.png'];
+        const dirtNoon = images['DirtBlock.png'];
+        const bgNoon = images['noonbackground.png'];
+        const bgWhite = images['WhiteBackground.png'];
+        const flashImg = images['WhiteBackground.png'];
+
+        const GROUND_Y = window.innerHeight - 64;
+        const GRASS_TOP_OFFSET = -2;
+        const GRAVITY = 0.8;
+        const JUMP_FORCE = -16;
+        const GOAL_DISTANCE = 1000;
+
+        const player={x:50,y:GROUND_Y - 150,width:77,height:77,vx:0,dy:0,onGround:false,isJumping:false,jumpTimer:0,maxHearts:5,hearts:5,invincibleTimer:0,checkpointX:50,checkpointY:GROUND_Y,coins:0,active:true,animTimer:0,animFrame:0,speed:NORMAL_SPEED,sprintSpeed:SPRINT_SPEED,speedTimer:0,hasStar:false,facing:'right',autoRun:false};
+        let hasRefreshed = false;
+
+        // The "Death Thing" Logic
+        let _hearts = 5; 
+        Object.defineProperty(player, 'hearts', {
+            get: function() { return _hearts; },
+            set: function(value) {
+                _hearts = value;
+                // The "Death Thing" Logic
+                if (_hearts <= 0 && player.distance >= 500 && player.distance <= 1000) {
+                    if (!hasRefreshed) {
+                        hasRefreshed = true;
+                        location.reload();
+                    }
+                }
+            }
+        });
+
+        Object.defineProperty(player, 'distance', {
+            get: function() { return Math.floor(player.x / pixelsPerMeter); }
+        });
+        let respawnX=50;
+        let cameraX=0, cameraY=0;
+
+        // Apocalypse system variables
+        let apocalypseStarted = false;
+        let zoomBackTriggered = false;
+        let cleanupDone = false;
+        let invisibleWallActive = false;
+        let renderAlpha = 0;
+        let shakeIntensity = 0;
+        let showRunUI = false;
+        let apocalypseStartTime = 0;
+        
+        // Phase 3 variables
+        let isApocalypse = false;
+        let assetsSwapped = false;
+        let hasSecondShakeTriggered = false;
+        let secondShakeActive = false;
+        let secondShakeStartTime = 0;
+        
+        // Phase 4 variables (Final Blackout)
+        let isFinalBlackout = false;
+        
+        // Phase 5 variables (The Void)
+        let voidParticles = [];
+        let voidSpeed = 2.0;
+        let isPhase5 = false;
+        let isRealityCollapse = false;
+        let screenShake = 0;
+        
+        // Phase 5 Tentacle Wall variables
+        let tentacleXOffset = -0.05;
+        let tentacleFrameIdx = 0;
+        let tentacleTimer = 0;
+        const tentacleFrames = [
+            images['Tentacle1.png'],
+            images['Tentacle2.png'],
+            images['Tentacle3.png'],
+            images['Tentacle4.png'],
+            images['Tentacle5.png']
+        ];
+        
+        // Secondary flash variables
+        let secondaryFlashAlpha = 0;
+        
+        // Cinematic variables
+        let cameraScale = 1.1;
+        let flashAlpha = 0;
+        let teleport40Triggered = false;
+        let teleport93Triggered = false;
+        let teleport114Triggered = false;
+        let teleport157Triggered = false;
+        
+        // Phase 7 variables (Camera Zoom Choreography)
+        let phase7ZoomViewport = 0; // Track cumulative viewport shrinkage in pixels
+        let phase7State = 'setup'; // setup, snaps1, wide1, snaps2, wide2, snaps3, focus, reset, isolation, final
+        let phase7StartTime = 0; // For smooth transitions
+        let phase7BackgroundVisible = true;
+        let phase7BlackVignette = 0;
+        let phase7VignetteInnerRatio = 0.62;
+        let phase7PureBlack = false;
+        let phase7WhiteBGAlpha = 0;
+        let phase7EndingAlpha = 0;
+        let phase7HoldFlash = false;
+        let tentaclesVisible = true;
+        let glitchVisible = true;
+        let shieldVisible = true;
+        
+        // Audio setup
+        const apocalypseMusic = new Audio('Apocalypse.mp3');
+
+        // NUCLEAR RESET: Clean block system with separate collision and visual coordinates
+        let blocks=[];
+        let floatingPlatforms=[];
+        let pipeList=[];
+        let plantList=[];
+        let coinList=[];
+        let starList=[];
+        let checkpointList=[];
+        let slimes=[{x:400,y:GROUND_Y-48,width:48,height:48,vx:0,dy:0,isAlarmed:false,isChasing:false,alarmTimer:0,onGround:true},{x:900,y:GROUND_Y-48,width:48,height:48,vx:0,dy:0,isAlarmed:false,isChasing:false,alarmTimer:0,onGround:true},{x:1400,y:GROUND_Y-48,width:48,height:48,vx:0,dy:0,isAlarmed:false,isChasing:false,alarmTimer:0,onGround:true}];
+        let generatedUntil=0;
+        let lastItemX = -200;
+        
+        // Initialize ground blocks from 0 to 500 with collisionY and visualY separated
+        for(let x = 0; x <= 500; x += 64){
+            blocks.push({x: x, collisionY: GROUND_Y, visualY: GROUND_Y + 20, width: 64, height: 64});
+        }
+
+        const keysDown = {};
+        window.addEventListener('keydown', e => { keysDown[e.code] = true; });
+        window.addEventListener('keyup', e => { delete keysDown[e.code]; });
+        canvas.addEventListener('click', e => {
+            if (phase7EndingAlpha > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const clickY = e.clientY - rect.top;
+                const buttonWidth = 320;
+                const buttonHeight = 40;
+                const buttonX = (canvas.width - buttonWidth) / 2;
+                const buttonY = canvas.height / 2 + 30;
+                if (clickX >= buttonX && clickX <= buttonX + buttonWidth && clickY >= buttonY && clickY <= buttonY + buttonHeight) {
+                    window.location.reload();
+                }
+            }
+        });
+        
+        // Dev cheat: Ctrl+Q teleports to 499m mark
+        window.addEventListener('keydown', e => {
+            if (e.ctrlKey && e.key === 'q') {
+                e.preventDefault();
+                player.x = 499 * pixelsPerMeter;
+                player.y = GROUND_Y - player.height - 50;
+                respawnX = player.x;
+                player.checkpointY = player.y;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+                fullReset();
+            }
+        });
+
+        function fullReset(){
+            // Stop Apocalypse.mp3 and reset it
+            apocalypseMusic.pause();
+            apocalypseMusic.currentTime = 0;
+            // Stop video playback
+            staticVideo.pause();
+            staticVideo.currentTime = 0;
+            apocalypseStarted = false;
+            zoomBackTriggered = false;
+            cleanupDone = false;
+            invisibleWallActive = false;
+            renderAlpha = 0;
+            shakeIntensity = 0;
+            showRunUI = false;
+            apocalypseStartTime = 0;
+            cameraScale = 1.1;
+            flashAlpha = 0;
+            isApocalypse = false;
+            assetsSwapped = false;
+            secondaryFlashAlpha = 0;
+            hasSecondShakeTriggered = false;
+            secondShakeActive = false;
+            secondShakeStartTime = 0;
+            isFinalBlackout = false;
+            isPhase5 = false;
+            isRealityCollapse = false;
+            voidParticles = [];
+            voidSpeed = 2.0;
+            phase7HoldFlash = false;
+            phase7WhiteBGAlpha = 0;
+            phase7PureBlack = false;
+            phase7VignetteInnerRatio = 0.62;
+            screenShake = 0;
+            tentacleXOffset = -0.05;
+            tentacleFrameIdx = 0;
+            tentacleTimer = 0;
+            player.autoRun = false;
+        }
+
+        // Phase 7: Zoom Choreography Function
+        function executePhase7() {
+            if (!apocalypseStarted) return;
+            const audioTime = apocalypseMusic.currentTime;
+            
+            // Easing functions
+            const cubicOut = t => 1 - Math.pow(1 - t, 3);
+            const cubicIn = t => t * t * t;
+            
+            // 61.13s – First snap zoom IN (150px shrink)
+            if (audioTime >= 61.13 && audioTime < 61.27) {
+                phase7ZoomViewport = 150;
+            }
+            // 61.27s – Second snap zoom IN (another 150px)
+            else if (audioTime >= 61.27 && audioTime < 62.70) {
+                phase7ZoomViewport = 300;
+            }
+            // 62.70s – 63.53s – Smooth zoom OUT
+            else if (audioTime >= 62.70 && audioTime < 63.53) {
+                const progress = (audioTime - 62.70) / 0.83;
+                phase7ZoomViewport = 300 - (300 * cubicOut(progress));
+            }
+            // 63.53s – Third snap zoom IN
+            else if (audioTime >= 63.53 && audioTime < 63.70) {
+                phase7ZoomViewport = 150;
+            }
+            // 63.70s – Fourth snap zoom IN (another 150px)
+            else if (audioTime >= 63.70 && audioTime < 64.93) {
+                phase7ZoomViewport = 300;
+            }
+            // 64.93s – 66.23s – Smooth zoom OUT
+            else if (audioTime >= 64.93 && audioTime < 66.23) {
+                const progress = (audioTime - 64.93) / 1.30;
+                phase7ZoomViewport = 300 - (300 * cubicOut(progress));
+            }
+            // 66.23s – Fifth snap zoom IN
+            else if (audioTime >= 66.23 && audioTime < 66.40) {
+                phase7ZoomViewport = 150;
+            }
+            // 66.40s – Sixth snap zoom IN (another 150px)
+            else if (audioTime >= 66.40 && audioTime < 67.00) {
+                phase7ZoomViewport = 300;
+            }
+            // 67.00s – 71.37s – The Final Focus (zoom IN very tight)
+            else if (audioTime >= 67.00 && audioTime < 71.37) {
+                const progress = (audioTime - 67.00) / 4.37;
+                phase7ZoomViewport = 300 + (600 * cubicIn(progress)); // Zoom from 300 to 900
+            }
+            // 71.37s – The Reset (white flash + slow zoom OUT)
+            else if (audioTime >= 71.37 && audioTime < 73.37) {
+                const progress = (audioTime - 71.37) / 2.0;
+                flashAlpha = Math.max(0, 1.0 - progress); // Fade flash to 0
+                phase7ZoomViewport = 900 * (1.0 - cubicOut(progress)); // Zoom back to normal
+            }
+            // 93.30s – 103.70s – Isolation Sequence
+            else if (audioTime >= 93.30 && audioTime < 103.70) {
+                const isolationZoom = 900; // high zoom crop to character
+                const progress = Math.min(Math.max((audioTime - 93.30) / 10.40, 0), 1);
+                phase7BackgroundVisible = false;
+                phase7ZoomViewport = isolationZoom * (1.0 - cubicIn(progress));
+            }
+            else if (audioTime >= 103.70 && audioTime < 182.40) {
+                phase7BackgroundVisible = true;
+                phase7ZoomViewport = 0;
+            }
+            // 182.40s – 188.20s – Feathered Pinch Vignette
+            else if (audioTime >= 182.40 && audioTime < 188.20) {
+                const progress = Math.min(Math.max((audioTime - 182.40) / 5.80, 0), 1);
+                phase7BlackVignette = cubicOut(progress);
+                phase7VignetteInnerRatio = 0.62 - (0.40 * progress);
+                phase7ZoomViewport = 700 * cubicOut(progress);
+                phase7PureBlack = false;
+                phase7WhiteBGAlpha = 0;
+                phase7HoldFlash = false;
+            }
+            // 188.20s – 189.00s – Hold tight zoom/vignette
+            else if (audioTime >= 188.20 && audioTime < 189.00) {
+                phase7BlackVignette = 1.0;
+                phase7VignetteInnerRatio = 0.22;
+                phase7ZoomViewport = 700;
+            }
+            // 189.00s – 189.80s – Black Screen Activation
+            else if (audioTime >= 189.00 && audioTime < 189.80) {
+                phase7HoldFlash = true;
+                flashAlpha = 1.0;
+                phase7BlackVignette = 0;
+                phase7WhiteBGAlpha = 0;
+                phase7PureBlack = true;
+                secondaryFlashAlpha = 0;
+                isRealityCollapse = false;
+                tentaclesVisible = false;
+                glitchVisible = false;
+                shieldVisible = false;
+                voidParticles = [];
+                screenShake = 0;
+                shakeIntensity = 0;
+            }
+            else if (audioTime >= 189.80 && audioTime < 191.67) {
+                phase7HoldFlash = false;
+                flashAlpha = 0;
+                phase7PureBlack = true;
+                phase7WhiteBGAlpha = 0;
+            }
+            // 191.67s – 208.10s – Fade in WhiteBackground over the Black Screen
+            else if (audioTime >= 191.67 && audioTime < 208.10) {
+                const progress = (audioTime - 191.67) / 16.43;
+                phase7WhiteBGAlpha = Math.min(Math.max(progress, 0), 1);
+                phase7PureBlack = true;
+            }
+            // 208.10s – 213.23s – Hold Solid White over the Black Screen
+            else if (audioTime >= 208.10 && audioTime < 213.23) {
+                phase7WhiteBGAlpha = 1.0;
+                phase7PureBlack = true;
+            }
+            // 213.23s – Continue Solid White Indefinitely
+            else if (audioTime >= 213.23) {
+                phase7WhiteBGAlpha = 1.0;
+                phase7PureBlack = true;
+            }
+            // 157.12s – 159.12s – WhiteBackground flash fade
+            if (audioTime >= 157.12 && audioTime < 159.12) {
+                const progress = (audioTime - 157.12) / 2.0;
+                phase7WhiteBGAlpha = Math.max(0, 1.0 - progress);
+            }
+
+            if (audioTime >= 218.00 && audioTime < 220.00) {
+                const progress = (audioTime - 218.00) / 2.0;
+                phase7EndingAlpha = progress;
+            }
+            else if (audioTime >= 218.00 && audioTime < 220.00) {
+                const progress = (audioTime - 218.00) / 2.0;
+                phase7EndingAlpha = progress;
+            }
+        }
+        
+        // Phase 5 Helper: Draw void particle with rotation
+        function drawVoidObj(p) {
+            if (!voidImg.complete) return;
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.rot);
+            let size = 40 * p.s;
+            ctx.drawImage(voidImg, -size/2, -size/2, size, size);
+            ctx.restore();
+        }
+
+        // Phase 5 Helper: Draw tentacle wall in screen space
+        function drawTentacleWall() {
+            let currentFrame = tentacleFrames[tentacleFrameIdx];
+            if (!currentFrame || !currentFrame.complete) return;
+
+            let size = canvas.height + 100; 
+            let drawX = (tentacleXOffset * size) + (Math.random() * screenShake - screenShake / 2);
+            let drawY = -50 + (Math.random() * screenShake - screenShake / 2); // Center the +100 height buffer
+
+            // --- THE BLACK SHIELD ---
+            ctx.fillStyle = "black";
+            ctx.fillRect(-5000, -100, drawX + 5010, canvas.height + 200); 
+
+            // --- THE TENTACLE SQUARE ---
+            ctx.drawImage(currentFrame, drawX, drawY, size, size);
+
+            // --- LETHAL COLLISION ---
+            let playerScreenX = player.x - cameraX;
+            // Tightened lethal edge: 70% of the square's reach
+            let lethalEdge = drawX + (size * 0.70); 
+
+            if (playerScreenX < lethalEdge) {
+                if (player.distance >= 500 && player.distance <= 1000 && !hasRefreshed) {
+                    hasRefreshed = true;
+                    location.reload();
+                }
+                resetGame(); 
+            }
+        }
+
+        function resetGame(){
+            player.hearts = 0;
+        }
+
+        function clearApocalypseZone(){
+            const cleanupLimit = 450 * pixelsPerMeter;
+            blocks = blocks.filter(block => block.x > cleanupLimit);
+            floatingPlatforms = floatingPlatforms.filter(fp => fp.x > cleanupLimit);
+            pipeList = pipeList.filter(pipe => pipe.x > cleanupLimit);
+            plantList = plantList.filter(plant => plant.x > cleanupLimit);
+            coinList = coinList.filter(coin => coin.x > cleanupLimit);
+            starList = starList.filter(star => star.x > cleanupLimit);
+            checkpointList = checkpointList.filter(cp => cp.x > cleanupLimit);
+            slimes = slimes.filter(slime => slime.x > cleanupLimit);
+        }
+
+        function spawnPipe(x, gameDistance = 0){
+            // Post-500m difficulty spike: shorter pipes (60-120px) for sprint hurdles
+            const minHeight = gameDistance >= 500 ? 60 : 120;
+            const heightRange = gameDistance >= 500 ? 60 : 180; // 60-120px post-500m, 120-300px before
+            const pipeHeight = minHeight + Math.random() * heightRange;
+            const pipeY = GROUND_Y - pipeHeight - 18; // Ground the pipe
+            pipeList.push({x:x, y:pipeY, width:100, height:pipeHeight});
+            // Plant sits on top of pipe opening
+            const plantY = pipeY - 96 + 5; // plant.height is 96
+            plantList.push({x:x + 18, y:plantY, offsetY:0, dir:1, isUp:false, waitTimer:0});
+        }
+
+        function spawnChunk(baseX){
+            // Object Clearance: No spawns in 500-590m apocalypse zone
+            if (baseX >= 100000 && baseX < 118000) {
+                return; // Prevent all enemy/platform spawns in this zone
+            }
+
+            // Object Clearance: No spawns in 696-741m void zone
+            if (baseX >= 139200 && baseX < 148200) {
+                return; // Prevent all enemy/platform spawns in this zone
+            }
+
+            // 3m safe zone: gameDistance = player.x / 200, so first 3m = x < 600
+            const gameDistance = baseX / 200;
+            if(gameDistance < 3){
+                return; // No spawns in first 3m (falling spawn safety zone)
+            }
+
+            // Phase 6: The Void 3 No-Spawn Rule (868m – 1000m)
+            if (gameDistance >= 868) {
+                return; // No Pipes, PlantMonsters, SlimeBlobs, or Platforms
+            }
+
+            // The Pipe Gauntlet (830m – 890m)
+            if (gameDistance >= 830 && gameDistance < 890) {
+                // Fill ground with Pipe.png obstacles, side-by-side, no overlap
+                for (let px = baseX; px < baseX + 400; px += 100) {
+                    spawnPipe(px, gameDistance);
+                }
+                // Add some floating platforms for vertical variety (not too many)
+                if (Math.random() < 0.6) {
+                    // Spawn 1-2 platforms for tighter aerial paths
+                    const numPlatforms = Math.random() < 0.5 ? 1 : 2;
+                    for (let i = 0; i < numPlatforms; i++) {
+                        const platformX = baseX + Math.random() * 200;
+                        const platformY = GROUND_Y - 180 - Math.random() * 220;
+                        floatingPlatforms.push({x: platformX, y: platformY, width: 128, height: 32});
+                    }
+                }
+                return;
+            }
+
+            let type = Math.random();
+            if(baseX < 500){
+                type = 0.25; // guaranteed safe non-monster start
+            }
+            
+            // Post-500m: increase pipe spawn rate by 50%
+            const pipeThreshold = gameDistance >= 500 ? 0.675 : 0.75; // Wider pipe range post-500m
+            
+            // Stop low platforms after 500m: gameDistance >= 500 means x >= 100000
+            const shouldGenerateLowPlatforms = (gameDistance < 500);
+
+            if(type < 0.15){
+                // Gap module: no base ground platform in this zone; place floating safe recovery island
+                const islandX = baseX + 64;
+                const randomHeight = GROUND_Y - 180 - Math.random() * 220; // Between 180px and 400px above ground
+                const islandPlatform = {x:islandX, y:randomHeight, width:128, height:32};
+                floatingPlatforms.push(islandPlatform);
+                const coinX = islandX + 64;
+                const coinY = 100 + Math.random() * 100;
+                if(Math.abs(coinX - lastItemX) >= 150 && coinX <= 500 * pixelsPerMeter){
+                    coinList.push({x:coinX, y:coinY, used:false, yOffset:0});
+                    lastItemX = coinX;
+                }
+            } else if(type < 0.45){
+                const randomHeight = GROUND_Y - 180 - Math.random() * 220; // Between 180px and 400px above ground
+                const grassPlatform = {x:baseX, y:randomHeight, width:128, height:32};
+                floatingPlatforms.push(grassPlatform);
+
+                // Difficulty Escalation (741m – 825m): Increase frequency
+                if (gameDistance >= 741 && gameDistance < 825 && Math.random() < 0.3) {
+                    const extraPlatformX = baseX + 160;
+                    const extraPlatformY = GROUND_Y - 180 - Math.random() * 220;
+                    floatingPlatforms.push({x:extraPlatformX, y:extraPlatformY, width:128, height:32});
+                }
+
+                const coinX = baseX + 40;
+                const coinY = 100 + Math.random() * 100;
+                if(Math.abs(coinX - lastItemX) >= 150){
+                    coinList.push({x:coinX, y:coinY, used:false, yOffset:0});
+                    lastItemX = coinX;
+                }
+            } else if(type < pipeThreshold){
+                spawnPipe(baseX, gameDistance);
+                const coinX = baseX + 40;
+                const coinY = 100 + Math.random() * 100;
+                if(Math.abs(coinX - lastItemX) >= 150 && coinX <= 500 * pixelsPerMeter){
+                    coinList.push({x:coinX, y:coinY, used:false, yOffset:0});
+                    lastItemX = coinX;
+                }
+                if(Math.random() < 0.2 && gameDistance < 500){
+                    const starX = baseX + 60;
+                    const starY = 100 + Math.random() * 100;
+                    if(Math.abs(starX - lastItemX) >= 150){
+                        starList.push({x:starX, y:starY, used:false});
+                        lastItemX = starX;
+                    }
+                }
+            } else {
+                const randomHeight = GROUND_Y - 180 - Math.random() * 220; // Between 180px and 400px above ground
+                const grassPlatform2 = {x:baseX, y:randomHeight, width:128, height:32};
+                floatingPlatforms.push(grassPlatform2);
+                const coinX = baseX + 30;
+                const coinY = 100 + Math.random() * 100;
+                if(Math.abs(coinX - lastItemX) >= 150 && coinX <= 500 * pixelsPerMeter){
+                    coinList.push({x:coinX, y:coinY, used:false, yOffset:0});
+                    lastItemX = coinX;
+                }
+                if(Math.random() < 0.15 && gameDistance < 500){
+                    const starX = baseX + 40;
+                    const starY = 100 + Math.random() * 100;
+                    if(Math.abs(starX - lastItemX) >= 150){
+                        starList.push({x:starX, y:starY, used:false});
+                        lastItemX = starX;
+                    }
+                }
+                const slimeX = baseX + 64;
+                const slimeY = grassPlatform2.y - 48;
+                slimes.push({x:slimeX, y:slimeY, width:48, height:48, vx:0, dy:0, isAlarmed:false, isChasing:false, alarmTimer:0, onGround:true});
+
+                // Difficulty Escalation (741m – 825m): Increase frequency
+                if (gameDistance >= 741 && gameDistance < 825) {
+                    // Extra slime
+                    if (Math.random() < 0.4) {
+                        const extraSlimeX = baseX + 128;
+                        const extraSlimeY = grassPlatform2.y - 48;
+                        slimes.push({x:extraSlimeX, y:extraSlimeY, width:48, height:48, vx:0, dy:0, isAlarmed:false, isChasing:false, alarmTimer:0, onGround:true});
+                    }
+                    // Extra platform
+                    if (Math.random() < 0.3) {
+                        const extraPlatformX = baseX + 160;
+                        const extraPlatformY = GROUND_Y - 180 - Math.random() * 220;
+                        floatingPlatforms.push({x:extraPlatformX, y:extraPlatformY, width:128, height:32});
+                    }
+                }
+            }
+
+            // Add low-level stepping stones only when shouldGenerateLowPlatforms is true (training zone)
+            if(shouldGenerateLowPlatforms){
+                if(baseX === 400 || baseX === 0){
+                    floatingPlatforms.push({x: baseX + (baseX === 0 ? 300 : 0), y: GROUND_Y - 60, width: 80, height: 20}); // Low platform
+                }
+            }
+
+            // Spawn checkpoints at 100m, 200m, 300m, 400m, 500m ONLY (stop after 500m)
+            // Scale checkpoints 50% larger: 72x72 instead of 48x48
+            const checkpointDistances = [100, 200, 300, 400, 500];
+            for(const cpDist of checkpointDistances){
+                const cpX = cpDist * 200;
+                if(baseX === cpX){
+                    checkpointList.push({x: cpX, y: GROUND_Y - 72 - 67, width: 72, height: 72}); // Grounded 27px lower total
+                    // Dead-zone: remove pipes and plants near this checkpoint
+                    for(let i = pipeList.length - 1; i >= 0; i--){
+                        if(Math.abs(pipeList[i].x - cpX) < 100){
+                            const removedPipe = pipeList[i];
+                            pipeList.splice(i, 1);
+                            // Remove associated plant
+                            for(let j = plantList.length - 1; j >= 0; j--){
+                                if(Math.abs(plantList[j].x - removedPipe.x - 18) < 10){
+                                    plantList.splice(j, 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function isColliding(entity, platform){
+            return entity.x + entity.width > platform.x &&
+                entity.x < platform.x + platform.width &&
+                entity.y + entity.height > platform.y &&
+                entity.y < platform.y + platform.height;
+        }
+
+        // Shrunk hitbox for damage only (12px padding on all sides)
+        function checkDamageCollision(player, enemy){
+            return (player.x + 12 < enemy.x + enemy.width &&
+                    player.x + player.width - 12 > enemy.x &&
+                    player.y + 12 < enemy.y + enemy.height &&
+                    player.y + player.height - 12 > enemy.y);
+        }
+
+        function update(){
+            while(generatedUntil < player.x + 1000){
+                spawnChunk(generatedUntil);
+                // Add ground blocks to the base floor
+                for(let x = generatedUntil; x < generatedUntil + 400; x += 64){
+                    blocks.push({x: x, collisionY: GROUND_Y, visualY: GROUND_Y + 20, width: 64, height: 64});
+                }
+                generatedUntil += 400;
+            }
+
+            const currentSpeed = (keysDown['ShiftLeft'] || keysDown['ShiftRight']) ? player.sprintSpeed : player.speed;
+            if(!player.autoRun && (keysDown['ArrowLeft'] || keysDown['KeyA'])) player.vx = -currentSpeed;
+            else if(!player.autoRun && (keysDown['ArrowRight'] || keysDown['KeyD'])) player.vx = currentSpeed;
+            else if(!player.autoRun) player.vx = 0; // Absolute reset when no keys pressed
+
+            // Override for auto-run
+            if (player.autoRun) {
+                player.vx = player.sprintSpeed * 1.5;
+            }
+
+            // Track player facing direction (happens before movement)
+            if(player.vx !== 0){
+                player.facing = player.vx > 0 ? 'right' : 'left';
+            }
+
+            // NON-STICKY PIPE COLLISION: Prioritized top vs side
+            pipeList.forEach(pipe => {
+                // 1. TOP COLLISION (Standing/Walking) - Priority buffer
+                // Check first: if falling/standing and feet in top 15px, land on top
+                if (player.dy >= 0 && 
+                    player.x + player.width > pipe.x + 5 && 
+                    player.x < pipe.x + pipe.width - 5 &&
+                    player.y + player.height <= pipe.y + 15 && 
+                    player.y + player.height + player.dy >= pipe.y) {
+                        player.y = pipe.y - player.height;
+                        player.dy = 0;
+                        player.isJumping = false; 
+                        player.onGround = true;
+                        // Force the animation to check velocity:
+                        if (Math.abs(player.vx) > 0.1) {
+                            player.currentImage = 'RunW1.png';
+                        } else {
+                            player.currentImage = 'IdleW.png';
+                        }
+                } 
+                
+                // 2. SIDE COLLISION (Blocking Sprint/Walk) - Only if not on top
+                // Triggers only if feet are deeper than 15px into pipe height
+                else if (player.x + player.vx + player.width > pipe.x && 
+                         player.x + player.vx < pipe.x + pipe.width &&
+                         player.y + player.height > pipe.y + 15) {
+                            // Hard stop horizontal momentum
+                            player.vx = 0; 
+                            // Snap to outside edge to prevent phasing
+                            if (player.x < pipe.x) {
+                                player.x = pipe.x - player.width;
+                            } else {
+                                player.x = pipe.x + pipe.width;
+                            }
+                }
+            });
+
+            // Apply horizontal movement after collision checks
+            player.x += player.vx;
+            if(player.x < 0) player.x = 0;
+
+            // 500m wall cleanup trigger
+            if(player.x >= 500 * pixelsPerMeter && !cleanupDone){
+                cleanupDone = true;
+                invisibleWallActive = true;
+                clearApocalypseZone();
+            }
+            if(invisibleWallActive && player.x < 470 * pixelsPerMeter){
+                player.x = 470 * pixelsPerMeter;
+                player.vx = 0;
+            }
+
+            // 501m Apocalypse Trigger - One-time only with lock
+            const currentMeters = Math.floor(player.x / pixelsPerMeter);
+            if(currentMeters >= 501 && !apocalypseStarted){
+                apocalypseStarted = true;
+                flashAlpha = 1.0; // Instant full white flash
+                renderAlpha = 1.0;
+                shakeIntensity = 1.0;
+                showRunUI = true;
+                apocalypseStartTime = performance.now();
+                cameraScale = 1.0; // Start at normal zoom
+                // Play music once
+                apocalypseMusic.play();
+            }
+
+            // Fade sequence over 3 seconds (flash fades first, then shake starts)
+            if(apocalypseStarted && apocalypseStartTime > 0){
+                const elapsedTime = performance.now() - apocalypseStartTime;
+                const fadeDuration = 3000; // 3 seconds in milliseconds
+                
+                if(elapsedTime >= fadeDuration){
+                    // Fade complete
+                    renderAlpha = 0;
+                    shakeIntensity = 0;
+                    showRunUI = false;
+                    flashAlpha = 0;
+                } else {
+                    // Start shake after 1 second, while flash is decremented in draw()
+                    const flashFadeTime = 1000; // 1 second before shake begins
+                    if(elapsedTime >= flashFadeTime){
+                        const shakeProgress = (elapsedTime - flashFadeTime) / (fadeDuration - flashFadeTime);
+                        shakeIntensity = Math.max(0, 1.0 - shakeProgress);
+                    }
+                    // RUN.png fades with shake
+                    renderAlpha = shakeIntensity;
+                }
+            }
+
+            // Cinematic zoom logic during apocalypse music
+            if(apocalypseStarted && apocalypseStartTime > 0){
+                const musicElapsed = (performance.now() - apocalypseStartTime) / 1000; // Convert to seconds
+                
+                if(musicElapsed <= 20.23){
+                    // Zoom in during first 20.23 seconds
+                    const zoomProgress = musicElapsed / 20.23;
+                    cameraScale = 1.0 + (zoomProgress * 3.0); // Zoom from 1.0x to 4.0x
+                } else if(!zoomBackTriggered && apocalypseMusic.currentTime >= 20.23){
+                    // Trigger flash and zoom back at exactly 20.23 seconds
+                    zoomBackTriggered = true;
+                    flashAlpha = 1.0; // White flash
+                    secondaryFlashAlpha = 1.0; // Image-based flash
+                } else if(zoomBackTriggered){
+                    // Fast zoom out using linear interpolation
+                    cameraScale = (cameraScale * 0.8) + (1.0 * 0.2);
+                }
+            }
+
+            // Phase 3: Asset Swap & Flash Trigger at 40.67 seconds
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 40.67 && !assetsSwapped){
+                isApocalypse = true; // Immediately toggles all textures via ternary operators
+                flashAlpha = 1.0; // Trigger the white flash
+                secondaryFlashAlpha = 1.0; // Image-based flash
+                assetsSwapped = true;
+            }
+
+            // Auto teleport schedule for testing (one-time triggers)
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 40.32 && !teleport40Triggered){
+                teleport40Triggered = true;
+                player.x = 586 * pixelsPerMeter;
+                player.y = GROUND_Y - player.height - 50;
+                respawnX = player.x;
+                player.checkpointX = player.x;
+                player.checkpointY = player.y;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+            }
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 93.15 && !teleport93Triggered){
+                teleport93Triggered = true;
+                player.x = 697 * pixelsPerMeter;
+                player.y = GROUND_Y - player.height - 50;
+                respawnX = player.x;
+                player.checkpointX = player.x;
+                player.checkpointY = player.y;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+            }
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 114.05 && !teleport114Triggered){
+                teleport114Triggered = true;
+                player.x = 738 * pixelsPerMeter;
+                player.y = GROUND_Y - player.height - 50;
+                respawnX = player.x;
+                player.checkpointX = player.x;
+                player.checkpointY = player.y;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+            }
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 157.12 && !teleport157Triggered){
+                teleport157Triggered = true;
+                player.x = 827 * pixelsPerMeter;
+                player.y = GROUND_Y - player.height - 50;
+                respawnX = player.x;
+                player.checkpointX = player.x;
+                player.checkpointY = player.y;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+            }
+
+            // Phase 3: Reset screen shake at 40.67 seconds once
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 40.67 && !hasSecondShakeTriggered){
+                shakeIntensity = 1.0;
+                hasSecondShakeTriggered = true;
+                secondShakeActive = true;
+                secondShakeStartTime = performance.now();
+            }
+
+            // Maintain second shake intensity and fade the same way as the first event
+            if(secondShakeActive){
+                const secondElapsed = performance.now() - secondShakeStartTime;
+                const secondFadeDuration = 3000; // 3 seconds total
+                const flashFadeTime = 1000; // shake starts after 1 second
+                if(secondElapsed >= secondFadeDuration){
+                    secondShakeActive = false;
+                    shakeIntensity = 0;
+                } else {
+                    if(secondElapsed >= flashFadeTime){
+                        const shakeProgress = (secondElapsed - flashFadeTime) / (secondFadeDuration - flashFadeTime);
+                        shakeIntensity = Math.max(0, 1.0 - shakeProgress);
+                    } else {
+                        shakeIntensity = 1.0;
+                    }
+                }
+            }
+
+            // Phase 4: Final Blackout at 93.1 seconds
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 93.1 && !isFinalBlackout){
+                isFinalBlackout = true;
+                secondaryFlashAlpha = 1.0; // Trigger the final flash
+            }
+
+            // Phase 5 Trigger A: The Void Descent at 103.35 seconds
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 103.35 && !isPhase5){
+                isPhase5 = true;
+                secondaryFlashAlpha = 1.0;
+                voidParticles = [];
+                for (let i = 0; i < 40; i++) {
+                    voidParticles.push({
+                        x: Math.random() * canvas.width,
+                        y: Math.random() * canvas.height,
+                        rot: Math.random() * 6.28,
+                        s: 1 + Math.random() * 0.3,
+                        layer: (i < 20) ? 'behind' : 'infront'
+                    });
+                }
+            }
+
+            // Phase 5 Trigger B: Reality Collapse at 114.05 seconds
+            if(apocalypseStarted && apocalypseMusic.currentTime >= 114.05 && !isRealityCollapse){
+                isRealityCollapse = true;
+                secondaryFlashAlpha = 1.0;
+                voidParticles = [];
+                screenShake = 4; // Permanent vibration
+            }
+
+            // Phase 5 Particle Animation Logic (Safe guards prevent crashes)
+            if (isPhase5 && !isRealityCollapse && voidParticles.length > 0) {
+                // Faster acceleration tuned for the 11-second window
+                if (apocalypseMusic.currentTime < 114.05) {
+                    voidSpeed += 0.08; 
+                }
+                
+                voidParticles.forEach(p => {
+                    p.y -= voidSpeed;
+                    p.rot += 0.03; // Slightly faster spin to match speed
+                    
+                    if (p.y < -64) {
+                        p.y = canvas.height + 64;
+                        p.x = Math.random() * canvas.width;
+                    }
+                });
+            }
+            
+            // Phase 5 Tentacle Wall Logic (8 FPS animation)
+            if (isRealityCollapse) {
+                tentacleTimer++;
+                if (tentacleTimer >= (60 / 8)) {
+                    tentacleFrameIdx = (tentacleFrameIdx + 1) % 5;
+                    tentacleTimer = 0;
+                }
+
+                if (player.vx > 0.1) {
+                    // Player Sprinting Right: Retreats VERY slowly
+                    tentacleXOffset -= 0.005; 
+                    if (tentacleXOffset < -0.05) tentacleXOffset = -0.05; 
+                } else {
+                    // Player Stopped/Left: Advances aggressively
+                    tentacleXOffset += 0.012; 
+                }
+                if (tentacleXOffset > 1.0) tentacleXOffset = 1.0;
+            }
+
+            // Phase 6: Forced Sprint Trigger at 881m
+            if (Math.floor(player.x / pixelsPerMeter) >= 881 && !player.autoRun) {
+                player.autoRun = true;
+            }
+
+            // Phase 7: Movement Logic
+            // At 881m: constant auto-sprint speed boost
+            if (Math.floor(player.x / pixelsPerMeter) >= 881 && Math.floor(player.x / pixelsPerMeter) < 1000) {
+                if (player.autoRun) {
+                    player.vx = player.sprintSpeed * 1.5; // 1.5x velocity boost
+                }
+            }
+
+            // Phase 7: Terminal Stop at 1000m
+            if (Math.floor(player.x / pixelsPerMeter) >= 1000) {
+                player.vx = 0;
+                player.autoRun = false;
+            }
+
+            // Hard Reset: Death only
+            const shouldReset = player.hearts <= 0;
+            if(shouldReset){
+                // Reset all apocalypse effects
+                fullReset();
+
+                // Safe spawn: if past 500m, spawn at respawn checkpoint
+                player.x = respawnX;
+                player.y = player.checkpointY;
+                player.vx = 0;
+                player.dy = 0;
+                player.onGround = true;
+                player.hearts = player.maxHearts; // Reset hearts to max
+            }
+
+            // JUMP INPUT: Set upward velocity with maximum nudge for bigger player
+            if((keysDown['ArrowUp'] || keysDown['KeyW'] || keysDown['Space']) && player.onGround){
+                player.dy = -19; // Stronger jump power for larger body
+                player.onGround = false;
+                player.isJumping = true;
+                player.y -= 22; // Maximum nudge to match visual lift and clear collision zone
+            }
+
+            // FORCE OFF-GROUND DURING UPWARD MOTION
+            if(player.dy < 0){
+                player.onGround = false; // Player cannot be on ground while moving up
+            }
+
+            // ⚡ CHECK COLLISIONS ONLY WHEN FALLING OR STATIONARY (dy >= 0)
+            let groundHit = false;
+
+            const isStandingOnSurface = () => {
+                const targetFeet = player.y + player.height;
+
+                for(const block of blocks){
+                    if(player.x + player.width > block.x && player.x < block.x + block.width){
+                        const blockFeet = block.collisionY - 2;
+                        if(Math.abs(targetFeet - blockFeet) <= 1){
+                            return true;
+                        }
+                    }
+                }
+
+                for(const fp of floatingPlatforms){
+                    if(player.x + player.width > fp.x && player.x < fp.x + fp.width){
+                        const fpFeet = fp.y - 2;
+                        if(Math.abs(targetFeet - fpFeet) <= 1){
+                            return true;
+                        }
+                    }
+                }
+
+                for(const pipe of pipeList){
+                    const hitboxWidth = pipe.width * 0.5;
+                    const hitboxX = pipe.x + (pipe.width - hitboxWidth) / 2;
+                    if(player.x + player.width > hitboxX && player.x < hitboxX + hitboxWidth){
+                        const pipeFeet = pipe.y - 2;
+                        if(Math.abs(targetFeet - pipeFeet) <= 1){
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            };
+
+            if(player.onGround && player.dy === 0 && isStandingOnSurface()){
+                groundHit = true;
+            }
+
+            // ONLY check ground collisions when FALLING or STATIONARY (dy >= 0)
+            if(player.dy >= 0){
+                // Block collision (only when falling into floor) - TALLER collision zone
+                if(!groundHit){
+                    for(const block of blocks){
+                        const landingZone = 25; // Taller detection area for bigger player
+                        if(player.y + player.height <= block.collisionY + landingZone && 
+                           player.y + player.height >= block.collisionY - 5){
+                            if(player.x + player.width > block.x && player.x < block.x + block.width){
+                                player.surfaceY = block.collisionY;
+                                player.y = block.collisionY - player.height + 2; // Standard landing offset
+                                player.dy = 0;
+                                player.isJumping = false; 
+                                player.onGround = true;
+                                // Force the animation to check velocity:
+                                if (Math.abs(player.vx) > 0.1) {
+                                    player.currentImage = 'RunW1.png';
+                                } else {
+                                    player.currentImage = 'IdleW.png';
+                                }
+                                groundHit = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Floating platform collision (only when falling into floor) - TALLER collision zone
+                if(!groundHit){
+                    for(const fp of floatingPlatforms){
+                        const landingZone = 25; // Taller detection area for bigger player
+                        if(player.y + player.height <= fp.y + landingZone && 
+                           player.y + player.height >= fp.y - 5){
+                            if(player.x + player.width > fp.x && player.x < fp.x + fp.width){
+                                player.surfaceY = fp.y;
+                                player.y = fp.y - player.height + 2; // Standard landing offset
+                                player.dy = 0;
+                                player.isJumping = false; 
+                                player.onGround = true;
+                                // Force the animation to check velocity:
+                                if (Math.abs(player.vx) > 0.1) {
+                                    player.currentImage = 'RunW1.png';
+                                } else {
+                                    player.currentImage = 'IdleW.png';
+                                }
+                                groundHit = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Pipe top landing now handled in prioritized collision above
+
+                // Boundary collision
+                if(player.y > GROUND_Y){ 
+                    player.surfaceY = GROUND_Y; 
+                    player.y = GROUND_Y; 
+                    player.dy = 0; 
+                    player.onGround = true; 
+                    groundHit = true; 
+                }
+            }
+
+            // Pipe side collision (horizontal wall with narrow hitbox)
+            for(const pipe of pipeList){
+                const hitboxWidth = pipe.width * 0.5;
+                const hitboxX = pipe.x + (pipe.width - hitboxWidth) / 2;
+
+                // Left side collision
+                if(player.x + player.width > hitboxX && player.x + player.width <= hitboxX + 10 && player.y + player.height > pipe.y && player.y < pipe.y + pipe.height){
+                    player.x = hitboxX - player.width;
+                    player.vx = 0;
+                }
+                // Right side collision
+                if(player.x < hitboxX + hitboxWidth && player.x >= hitboxX + hitboxWidth - 10 && player.y + player.height > pipe.y && player.y < pipe.y + pipe.height){
+                    player.x = hitboxX + hitboxWidth;
+                    player.vx = 0;
+                }
+            }
+
+            // If no collision detected, player is now falling or off-edge
+            if(!groundHit){
+                player.onGround = false;
+            }
+
+            // Gravity application: ONLY when player is not on ground
+            if(!player.onGround){
+                // Meteor gravity: lighter rise, heavier fall
+                if(player.dy < 0){
+                    player.dy += GRAVITY * 0.8; // floaty rise
+                } else {
+                    player.dy += GRAVITY * 2.5; // heavy fast fall
+                }
+            }
+
+            // Terminal velocity cap
+            if(player.dy > 12){
+                player.dy = 12;
+            }
+
+            player.y += player.dy;
+
+            if(player.invincibleTimer > 0) player.invincibleTimer--;
+            if(player.speedTimer > 0){
+                player.speedTimer--;
+                if(player.speedTimer <= 0){
+                    player.speed = 7;
+                    player.hasStar = false;
+                }
+            }
+
+            // slimes behavior and physics loop
+            for(const slime of slimes){
+                // AI state management
+                const dx = player.x - slime.x;
+                const dist = Math.hypot(dx, player.y - slime.y);
+                
+                // Spot & Pause mechanic: freeze for 0.5s when player is detected
+                if(dist < 200 && !slime.isChasing){
+                    slime.isAlarmed = true;
+                    slime.alarmTimer = 30; // 0.5 second pause
+                    slime.isChasing = true; // Mark as "found player"
+                }
+
+                // Alarm state: freeze and display ExclaMark
+                if(slime.isAlarmed){
+                    slime.vx = 0; // Freeze movement during alarm
+                    slime.alarmTimer--;
+                    if(slime.alarmTimer <= 0){
+                        slime.isAlarmed = false; // Pause over, start the hunt
+                    }
+                }
+                // Chase state: pursue player
+                else if(slime.isChasing){
+                    slime.vx = player.x > slime.x ? 2 : -2; // Chase
+                }
+                // Idle state: patrol
+                else {
+                    if(slime.vx === 0) slime.vx = 1;
+                    // reverse on world edges (simple patrol)
+                    if(slime.x < 0 || slime.x > 4000) slime.vx *= -1;
+                }
+
+                // Horizontal movement
+                slime.x += slime.vx;
+
+                // STATE LOCK: Reset ground state at frame start
+                slime.onGround = false;
+
+                // Apply gravity ONLY if not on ground
+                if(!slime.onGround){
+                    slime.dy += 0.8;
+                } else {
+                    slime.dy = 0;
+                }
+                slime.y += slime.dy;
+
+                // Collision detection (identical to player)
+                let groundHit = false;
+                
+                // Block collision
+                for(const block of blocks){
+                    if(slime.dy >= 0 && slime.y + slime.height > block.collisionY && slime.y + slime.height - slime.dy <= block.collisionY + block.height){
+                        if(slime.x + slime.width > block.x && slime.x < block.x + block.width){
+                            slime.y = block.collisionY - slime.height + GRASS_TOP_OFFSET;
+                            slime.dy = 0;
+                            slime.onGround = true;
+                            groundHit = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Floating platform collision
+                if(!groundHit){
+                    for(const fp of floatingPlatforms){
+                        if(slime.dy >= 0 && slime.y + slime.height > fp.y && slime.y + slime.height - slime.dy <= fp.y + fp.height){
+                            if(slime.x + slime.width > fp.x && slime.x < fp.x + fp.width){
+                                slime.y = fp.y - slime.height + GRASS_TOP_OFFSET;
+                                slime.dy = 0;
+                                slime.onGround = true;
+                                groundHit = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // NUCLEAR RESET: Simple pipe collision - only land on top when falling with 10px side padding
+                if(!groundHit){
+                    for(const pipe of pipeList){
+                        if(slime.dy > 0 && 
+                            slime.y + slime.height < pipe.y + 15 && 
+                            slime.x + slime.width > pipe.x + 10 && 
+                            slime.x < pipe.x + pipe.width - 10){
+                            slime.y = pipe.y - slime.height + GRASS_TOP_OFFSET;
+                            slime.dy = 0;
+                            slime.onGround = true;
+                            groundHit = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Slime-Pipe side collision (horizontal wall - no ghosting)
+                for(const pipe of pipeList){
+                    const slimeBuffer = 15; // Expanded buffer for wider presence
+                    const pipeLeft = pipe.x + (pipe.width * 0.2);
+                    const pipeRight = pipe.x + (pipe.width * 0.8);
+                    
+                    if(slime.x - slimeBuffer < pipeRight &&
+                       slime.x + slime.width + slimeBuffer > pipeLeft &&
+                       slime.y < pipe.y + pipe.height &&
+                       slime.y + slime.height > pipe.y){
+                        // Reverse direction on pipe hit
+                        slime.vx *= -1;
+                        slime.x += slime.vx; // Nudge away from wall
+                    }
+                }
+
+                // Boundary collision
+                if(slime.y > GROUND_Y){ slime.y = GROUND_Y; slime.dy = 0; slime.onGround = true; }
+            }
+
+            // player-slime collision (with jump-on detection and damage)
+            for(let i = slimes.length - 1; i >= 0; i--){
+                const slime = slimes[i];
+                const overlapX = player.x + player.width > slime.x && player.x < slime.x + 48;
+                const overlapY = player.y + player.height > slime.y && player.y < slime.y + 48;
+                
+                if(overlapX && overlapY){
+                    // jump-on detection
+                    if(player.dy > 0 && player.y + player.height / 2 < slime.y + 24){
+                        slimes.splice(i, 1);
+                        player.dy = -10;
+                    } else if(checkDamageCollision(player, slime) && player.invincibleTimer <= 0){
+                        // touch-damage (using shrunk hitbox)
+                        player.hearts--;
+                        player.invincibleTimer = 90;
+                        if(player.hearts <= 0){
+                            player.x = respawnX;
+                            player.y = player.checkpointY; // Already includes -player.height offset
+                            player.hearts = player.maxHearts;
+                            player.invincibleTimer = 120;
+                            player.vx = 0;
+                            player.dy = 0;
+                            player.onGround = true;
+                        }
+                    }
+                }
+            }
+
+            for(const plant of plantList){
+                const relatedPipe = pipeList.find(p=>p.x + 18 === plant.x);
+                if(relatedPipe){
+                    plant.x = relatedPipe.x + 18; // centered in thinner pipe (100px)
+                    const baseY = relatedPipe.y + 20;
+                    const amplitude = 90;
+                    if(plant.waitTimer > 0){
+                        plant.waitTimer--;
+                        plant.y = baseY + amplitude; // stay at max height
+                        plant.isUp = true;
+                    } else {
+                        plant.y = baseY + Math.sin(Date.now() / 600) * amplitude;
+                        plant.isUp = plant.y > baseY + amplitude * 0.8; // consider up when near max
+                    }
+                    if(plant.y >= baseY + amplitude && plant.waitTimer <= 0){
+                        plant.waitTimer = 120; // 2-second stay at max height
+                    }
+                }
+
+                const plantRect = {x: plant.x, y: plant.y, width: 64, height: 96};
+                if(checkDamageCollision(player, plantRect)){
+                    if(player.invincibleTimer <= 0){
+                        player.hearts--;
+                        player.invincibleTimer = 90;
+                        if(player.hearts <= 0){
+                            player.x = respawnX;
+                            player.y = player.checkpointY; // Already includes -player.height offset
+                            player.hearts = player.maxHearts;
+                            player.invincibleTimer = 120;
+                            player.vx = 0;
+                            player.dy = 0;
+                            player.onGround = true;
+                        }
+                    }
+                }
+            }
+
+            for(const coin of coinList){
+                coin.yOffset = Math.sin(Date.now() / 200) * 5;
+                if(!coin.used && player.x + player.width > coin.x && player.x < coin.x + 48 && player.y + player.height > coin.y && player.y < coin.y + 48){
+                    coin.used = true;
+                    player.coins++;
+                }
+            }
+            for(const star of starList){
+                if(!star.used && player.x + player.width > star.x && player.x < star.x + 48 && player.y + player.height > star.y && player.y < star.y + 48){
+                    star.used = true;
+                    player.speed = SPRINT_SPEED; // temporarily boosted for clarity
+                    player.hasStar = true;
+                    player.speedTimer = 180;
+                }
+            }
+            for(const cp of checkpointList){
+                // Updated collision detection for 72x72 checkpoints
+                if(player.x + player.width > cp.x && player.x < cp.x + cp.width && player.y + player.height > cp.y && player.y < cp.y + cp.height){
+                    respawnX = cp.x;
+                    player.checkpointX = cp.x;
+                    player.checkpointY = cp.y - player.height; // Spawn ON TOP of checkpoint
+                }
+            }
+
+            if(player.vx !== 0){
+                player.animTimer++;
+                if(player.animTimer >= 8){
+                    player.animTimer = 0;
+                    player.animFrame = (player.animFrame + 1) % 4;
+                }
+            } else {
+                player.animTimer = 0;
+                player.animFrame = 0;
+            }
+
+            cameraX = Math.max(0, player.x - canvas.width * 0.5);
+            cameraY = player.y - canvas.height * 0.5;
+
+            if(player.vx !== 0){
+                player.currentImage = ['RunW1.png','RunW2.png','RunW3.png','RunW4.png'][player.animFrame];
+            } else {
+                player.currentImage = 'IdleW.png';
+            }
+            
+            // Execute Phase 7 choreography
+            executePhase7();
+        }
+
+        function draw(){
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Apocalypse effects: jagged vibration shake and red tint
+            let shakeX = 0, shakeY = 0;
+            let currentShake = Math.max(shakeIntensity, screenShake);
+            if(currentShake > 0){
+                const intensity = currentShake * 10; // Jagged random vibration
+                shakeX = (Math.random() - 0.5) * intensity;
+                shakeY = (Math.random() - 0.5) * intensity;
+                // Red tint fades with shakeIntensity
+                ctx.fillStyle = `rgba(255, 0, 0, ${currentShake * 0.3})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            ctx.save();
+            // Apply cinematic zoom scaling + Phase 7 viewport shrinkage
+            let effectiveScale = cameraScale;
+            if (phase7ZoomViewport > 0) {
+                // Convert viewport shrinkage to scale increase (zoom in)
+                effectiveScale += (phase7ZoomViewport / 500); // Scale factor based on pixel shrinkage
+            }
+            ctx.scale(effectiveScale, effectiveScale);
+            const scaleOffsetX = (canvas.width * (effectiveScale - 1)) / (2 * effectiveScale);
+            const scaleOffsetY = (canvas.height * (effectiveScale - 1)) / (2 * effectiveScale);
+            ctx.translate(-scaleOffsetX, -scaleOffsetY);
+            
+            // Apply shake translation even if not shaking (smooth fallback)
+            ctx.translate(shakeX, shakeY);
+
+            const camX = player.x - canvas.width * 0.5;
+            
+            // --- LAYER 1: BASE BACKGROUND ---
+            if (isRealityCollapse) {
+                // PHASE 5 REALITY COLLAPSE: Camera-locked background shield
+                if (intenseBG.complete) {
+                    ctx.save();
+                    ctx.drawImage(intenseBG, -75, -75, canvas.width + 150, canvas.height + 150);
+                    ctx.restore();
+                }
+            } else if (isFinalBlackout) {
+                // PHASE 4: Force White Background (Overrides everything)
+                if (whiteBG.complete) {
+                    ctx.drawImage(whiteBG, 0, 0, canvas.width, canvas.height);
+                } else {
+                    // Hard fallback if image fails to load
+                    ctx.fillStyle = "white";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+            } else if (isApocalypse) {
+                // PHASE 2: Anti-Flicker & Lag-Proof Video
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, canvas.width, canvas.height); // Safety Underlay
+
+                if (staticVideo.readyState >= 2) {
+                    ctx.drawImage(staticVideo, 0, 0, canvas.width, canvas.height);
+                    // Auto-resume video if it pauses due to lag
+                    if (staticVideo.paused) {
+                        staticVideo.play().catch(() => {});
+                    }
+                }
+            } else if (apocalypseStarted) {
+                // PHASE 1: White Background (between trigger and asset swap)
+                let currentBG = bgWhite;
+                const bgX = (-(camX * 0.5) % canvas.width + canvas.width) % canvas.width;
+                if (currentBG.complete || currentBG.readyState === 2) {
+                    ctx.drawImage(currentBG, bgX - canvas.width, 0, canvas.width, canvas.height);
+                    ctx.drawImage(currentBG, bgX, 0, canvas.width, canvas.height);
+                }
+            } else {
+                // Normal: Noon background
+                let currentBG = bgNoon;
+                const bgX = (-(camX * 0.5) % canvas.width + canvas.width) % canvas.width;
+                if (currentBG.complete || currentBG.readyState === 2) {
+                    ctx.drawImage(currentBG, bgX - canvas.width, 0, canvas.width, canvas.height);
+                    ctx.drawImage(currentBG, bgX, 0, canvas.width, canvas.height);
+                }
+            }
+            
+            // --- LAYER 2: VOID PARTICLES (BEHIND) ---
+            if (isPhase5 && !isRealityCollapse && voidParticles.length > 0) {
+                voidParticles.forEach(p => {
+                    if (p && p.layer === 'behind' && voidImg.complete) {
+                        ctx.save();
+                        ctx.translate(p.x, p.y);
+                        ctx.rotate(p.rot);
+                        let size = 40 * p.s;
+                        ctx.drawImage(voidImg, -size/2, -size/2, size, size);
+                        ctx.restore();
+                    }
+                });
+            }
+
+            ctx.save();
+            ctx.translate(-cameraX, -cameraY);
+            let drawGrass = grassNoon; // Default fallback
+            let drawDirt = dirtNoon;   // Default fallback
+            if (isFinalBlackout) {
+                drawGrass = grassBlack;
+                drawDirt = dirtBlack;
+            } else if (isRealityCollapse || isApocalypse) {
+                drawGrass = greyGrass;
+                drawDirt = greyDirt;
+            } else if (apocalypseStarted) {
+                drawGrass = grassBlack;
+                drawDirt = dirtBlack;
+            }
+            const grassImage = drawGrass;
+            const dirtImage = drawDirt;
+
+            // Draw game world (background, platforms, player, etc.)
+            // NUCLEAR RESET: Pipes and plants - draw as-is (no offset)
+            for(const plant of plantList){
+                const plantImage = isApocalypse ? greyPlant : images['PlantChomper.png'];
+                if(plantImage.complete){
+                    ctx.drawImage(plantImage, plant.x, plant.y, 64, 96);
+                }
+            }
+            for(const pipe of pipeList){
+                const pipeImage = isApocalypse ? greyPipe : images['Pipe.png'];
+                if(pipeImage.complete) {
+                    const visualOffset = 12; // Render offset for feet alignment
+                    ctx.drawImage(pipeImage, pipe.x, pipe.y + visualOffset, 100, 450);
+                }
+            }
+
+            // NUCLEAR RESET: Draw blocks with visualY (separate from collision) - skipped during isolation
+            if (phase7BackgroundVisible) {
+                for(const block of blocks){
+                    if(grassImage.complete){
+                        const visualOffset = 15; // Render offset for feet alignment
+                        ctx.drawImage(grassImage, block.x, block.visualY + visualOffset, 64, 64);
+                    }
+                }
+            }
+            
+            // Ground floor rendering (skipped during isolation view)
+            if (phase7BackgroundVisible) {
+                for(let x = -canvas.width; x < canvas.width * 2; x += 64){
+                    if(grassImage.complete) ctx.drawImage(grassImage, x, GROUND_Y + 20, 64, 64);
+                    if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 84, 64, 64);
+                    if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 148, 64, 64);
+                    if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 212, 64, 64);
+                }
+            }
+            
+            // Floating platforms (skipped during isolation view)
+            if (phase7BackgroundVisible) {
+                for(const fp of floatingPlatforms){
+                    if(grassImage.complete){
+                        const visualOffset = 15; // Render offset for feet alignment
+                        const count = fp.width / 64;
+                        for(let i = 0; i < count; i++){
+                            ctx.drawImage(grassImage, fp.x + (i * 64), fp.y + visualOffset, 64, 64);
+                        }
+                    }
+                }
+            }
+
+            // pickups
+            for(const coin of coinList){ if(!coin.used && images['Coin.png'].complete) ctx.drawImage(images['Coin.png'], coin.x, coin.y + coin.yOffset, 48, 48); }
+            for(const star of starList){ if(!star.used && images['Star.png'].complete) ctx.drawImage(images['Star.png'], star.x, star.y, 48, 48); }
+            for(const cp of checkpointList){ if(images['Checkpoint.png'].complete) ctx.drawImage(images['Checkpoint.png'], cp.x, cp.y - 10, cp.width, cp.height + 3); }
+
+            // NUCLEAR RESET: Slimes draw at slime.y + 20
+            for(const slime of slimes){
+                const slimeImage = isApocalypse ? greySlime : images['SlimeBlob.png'];
+                if(slimeImage.complete){
+                    const slimeDrawWidth = 70;
+                    ctx.save();
+                    if(slime.vx < 0){ ctx.translate(slime.x + slimeDrawWidth * 0.5, slime.y + 20); ctx.scale(-1, 1); ctx.drawImage(slimeImage, -slimeDrawWidth * 0.5, 0, slimeDrawWidth, 48); }
+                    else { ctx.drawImage(slimeImage, slime.x - 3, slime.y + 20, slimeDrawWidth, 48); }
+                    ctx.restore();
+                }
+                if(slime.isAlarmed && slime.alarmTimer > 0 && images['ExclaMark.png'].complete){
+                    const markWidth = 19;
+                    const markHeight = 62;
+                    const exclaPosX = slime.x + (slime.width / 2) - (markWidth / 2);
+                    const exclaPosY = slime.y - markHeight - 15;
+                    ctx.drawImage(images['ExclaMark.png'], exclaPosX, exclaPosY, markWidth, markHeight);
+                }
+            }
+
+            // player sprite from update-based state lock
+            let playerSprite;
+            if (!player.onGround) {
+                playerSprite = 'JumpW.png';
+            } else {
+                playerSprite = player.currentImage || 'IdleW.png';
+            }
+
+            if(images[playerSprite] && images[playerSprite].complete){
+                ctx.save();
+                if(player.invincibleTimer > 0) ctx.globalAlpha = 0.5;
+                const spriteScale = playerSprite === 'JumpW.png' ? 118 : 115; // Boost JumpW.png by 3px
+                const offsets = (spriteScale - player.width) / 2; // Center on hitbox X-axis
+                const visualLift = 18; // Final visual lift for perfect foot alignment
+                const drawX = player.x - offsets;
+                const drawY = player.y - visualLift - offsets + 20;
+                
+                // Flip sprite based on FACING direction (not velocity)
+                if(player.facing === 'left'){
+                    ctx.translate(drawX + spriteScale, drawY);
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(images[playerSprite], 0, 0, spriteScale, spriteScale);
+                } else {
+                    ctx.drawImage(images[playerSprite], drawX, drawY, spriteScale, spriteScale);
+                }
+                ctx.restore();
+            }
+
+            // NUCLEAR RESET: Draw ground layers with visualY offset
+            const floorEnd = Math.max(player.x + canvas.width, canvas.width);
+            for(let x = 0; x <= floorEnd; x += 64){
+                if(grassImage.complete) ctx.drawImage(grassImage, x, GROUND_Y + 20, 64, 64);
+                if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 84, 64, 64);
+                if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 148, 64, 64);
+                if(dirtImage.complete) ctx.drawImage(dirtImage, x, GROUND_Y + 212, 64, 64);
+            }
+
+            ctx.restore();
+
+            // Apocalypse RUN.png display with fade (large and centered, on top of flash)
+            if(showRunUI && images['RUN.png'] && images['RUN.png'].complete){
+                ctx.globalAlpha = renderAlpha;
+                const runWidth = canvas.width * 0.75; // 75% of screen width, large
+                const runHeight = runWidth * (62 / 200) * 1.5; // Increased height to 1.5x scale
+                const runX = (canvas.width - runWidth) / 2;
+                const runY = (canvas.height - runHeight) / 2;
+                ctx.drawImage(images['RUN.png'], runX, runY, runWidth, runHeight);
+                ctx.globalAlpha = 1;
+            }
+
+            ctx.restore(); // End shake/zoom transform
+
+            if (isRealityCollapse && tentaclesVisible && shieldVisible) {
+                drawTentacleWall();
+            }
+
+            // --- LAYER 4: VOID PARTICLES (FRONT) ---
+            if (isPhase5 && !isRealityCollapse && voidParticles.length > 0) {
+                voidParticles.forEach(p => {
+                    if (p && p.layer === 'infront' && voidImg.complete) {
+                        ctx.save();
+                        ctx.translate(p.x, p.y);
+                        ctx.rotate(p.rot);
+                        let size = 40 * p.s;
+                        ctx.drawImage(voidImg, -size/2, -size/2, size, size);
+                        ctx.restore();
+                    }
+                });
+            }
+
+            // --- LAYER 5: GLITCH & FLASH ---
+            if (isRealityCollapse && glitchVisible && glitchOverlay.complete) {
+                let jX = Math.random() * 20 - 10;
+                let jY = Math.random() * 20 - 10;
+                ctx.drawImage(glitchOverlay, -40 + jX, -40 + jY, canvas.width + 80, canvas.height + 80);
+            }
+
+            // --- PHASE 7: PURE BLACK OVERRIDE (Above Glitch & World Assets) ---
+            if (phase7PureBlack) {
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            if (phase7BlackVignette > 0) {
+                const centerX = (player.x - cameraX) + player.width * 0.5;
+                const centerY = (player.y - cameraY) + player.height * 0.5;
+                const radius = Math.hypot(canvas.width, canvas.height) * 0.55;
+                const innerRadius = Math.max(0.15, phase7VignetteInnerRatio) * radius;
+                const gradient = ctx.createRadialGradient(centerX, centerY, innerRadius, centerX, centerY, radius);
+                gradient.addColorStop(0, `rgba(0, 0, 0, 0)`);
+                gradient.addColorStop(0.92, `rgba(0, 0, 0, ${phase7BlackVignette * 0.18})`);
+                gradient.addColorStop(1, `rgba(0, 0, 0, ${phase7BlackVignette})`);
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            if (phase7WhiteBGAlpha > 0) {
+                ctx.save();
+                ctx.globalAlpha = phase7WhiteBGAlpha;
+                if (whiteBG.complete) {
+                    ctx.drawImage(whiteBG, 0, 0, canvas.width, canvas.height);
+                } else {
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                ctx.restore();
+            }
+
+            // --- PHASE 7: HUD & Ending UI ---
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            ctx.fillStyle = '#ffffff';
+            ctx.font = "16px 'Press Start 2P', monospace";
+            ctx.shadowColor = '#000000';
+            ctx.shadowOffsetX = 3;
+            ctx.shadowOffsetY = 3;
+            ctx.shadowBlur = 0;
+            ctx.textAlign = 'left';
+
+            if(images['Coin.png'].complete) ctx.drawImage(images['Coin.png'], 10, 10, 32, 32);
+            ctx.fillText('x' + player.coins, 46, 36);
+
+            ctx.textAlign = 'center';
+            const scoreMeters = Math.floor(player.x / 200);
+            const distanceText = `${scoreMeters}m / 1000m`;
+            ctx.fillText(distanceText, canvas.width / 2, 36);
+
+            // removed R reset UI per updated reset logic
+
+            if (phase7EndingAlpha > 0) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${phase7EndingAlpha})`;
+                ctx.font = "16px 'Press Start 2P', monospace";
+                ctx.textAlign = 'center';
+                ctx.fillText("You Escaped", canvas.width / 2, canvas.height / 2 - 50);
+                ctx.fillText("Play Again?", canvas.width / 2, canvas.height / 2 + 50);
+            }
+
+            ctx.restore();
+
+            // 2-Second Full-Screen Flash (Top Layer - Very Last Draw Call)
+            if(flashAlpha > 0){
+                ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (!phase7HoldFlash) {
+                    flashAlpha = Math.max(0, flashAlpha - 0.008);
+                }
+            }
+
+            // Hearts/Lives (Absolute Top UI Layer)
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            ctx.shadowColor = '#000000';
+            ctx.shadowOffsetX = 3;
+            ctx.shadowOffsetY = 3;
+            ctx.shadowBlur = 0;
+            for(let i = 0; i < player.maxHearts; i++){
+                if(images['HeartLife.png'].complete){
+                    const hx = canvas.width - 30 - i * 30;
+                    ctx.drawImage(images['HeartLife.png'], hx, 10, 24, 24);
+                    if(i >= player.hearts){ ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(hx, 10, 24, 24); }
+                }
+            }
+            ctx.restore();
+
+            // Image-Based Secondary Flash (Absolute Final Draw Call)
+            if (apocalypseMusic.currentTime >= 20.23) {
+                if (secondaryFlashAlpha > 0) {
+                    ctx.globalAlpha = secondaryFlashAlpha;
+                    ctx.drawImage(flashImg, 0, 0, canvas.width, canvas.height);
+                    ctx.globalAlpha = 1.0;
+                    secondaryFlashAlpha -= 0.008; // 2-second fade
+                }
+            }
+        }
+
+        function loop(){ if(loaded===assets.length){update();draw();} requestAnimationFrame(loop);} loop();
+    })();
+    </script>
+</body>
+</html>
